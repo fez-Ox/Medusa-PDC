@@ -1,6 +1,5 @@
 import typer
 import json
-from transformers import Conversation
 from typing_extensions import Annotated
 import httpx
 import tqdm
@@ -11,13 +10,14 @@ app = typer.Typer()
 
 client = httpx.AsyncClient(timeout=None)
 
-async def run(conv: Conversation, url: str):
-    payload = {"model":"tgi", "messages": conv.messages}
+
+async def run(messages, url: str):
+    payload = {"model": "tgi", "messages": messages}
     response = await client.post(url, json=payload)
     content = response.json()
     message = content["choices"][0]["message"]
     message.pop("name", None)
-    conv.add_message(message)
+    messages.append(message)
 
 
 
@@ -36,16 +36,16 @@ def fix_source(source):
 
 async def recreate_conversation(conversation, sem, url):
     async with sem:
-        conv = Conversation()
+        messages = []
         try:
             for message in conversation[::2]:
                 assert message["role"] == "user"
-                conv.add_message(message)
-                await run(conv, url)
+                messages.append(message)
+                await run(messages, url)
         except Exception as e:
             print(e)
             pass
-        return conv.messages
+        return messages
 
 @app.command()
 def main(

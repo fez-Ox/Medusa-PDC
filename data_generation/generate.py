@@ -1,41 +1,28 @@
 import json
 import os
-import time
 import concurrent.futures
 
-import openai
-import shortuuid
+from openai import OpenAI
 import tqdm
 
 import argparse
-import random
-
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_random_exponential,
-)
-
-from fastchat.conversation import Conversation, SeparatorStyle
 from fastchat.model.model_adapter import get_conversation_template
 
 # Modify OpenAI's API key and API base to use vLLM's API server.
-openai.api_key = "EMPTY"
-openai.api_base = "http://localhost:8000/v1"
-
-api_base_pool = []
+api_pool = []
 
 # List models API
 for i in range(10):
-    openai.api_base = "http://localhost:800{}/v1".format(i)
+    api_base = "http://localhost:800{}/v1".format(i)
+    client = OpenAI(api_key="EMPTY", base_url=api_base)
     try:     
-        models = openai.Model.list()["data"][0]["id"]
-        print(openai.api_base, models)
-        api_base_pool.append(openai.api_base)
+        model_name = client.models.list().data[0].id
+        print(api_base, model_name)
+        api_pool.append((client, model_name, api_base))
     except:
         break
 
-print("API base pool: ", api_base_pool)
+print("API base pool: ", [api_base for _, _, api_base in api_pool])
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--data_path", type=str)
@@ -50,10 +37,12 @@ args = parser.parse_args()
 data = json.load(open(args.data_path, "r"))
 
 def generate_data(messages, idx):
+    prompt = None
     try:
         # load balanced
-        openai.api_base = api_base_pool[idx % len(api_base_pool)]
-        model_name=openai.Model.list()["data"][0]["id"]
+        if not api_pool:
+            raise RuntimeError("No available OpenAI-compatible API endpoint found.")
+        client, model_name, _ = api_pool[idx % len(api_pool)]
 
         if args.chat:
             converted_messages = []
@@ -77,15 +66,17 @@ def generate_data(messages, idx):
                     }
                 )
                 try:
-                    response = openai.ChatCompletion.create(
+                    response = client.chat.completions.create(
                         model=model_name,
                         messages=converted_messages,
                         max_tokens=args.max_tokens,
                         temperature=args.temperature,
                     )
-                    if response.choices[0]['finish_reason'] == "length":
+                    if response.choices[0].finish_reason == "length":
                         break
-                    response = response.choices[0]['message']['content'].strip()
+                    response = (response.choices[0].message.content or "").strip()
+                    if not response:
+                        break
                     output_messages.append(message)
                     output_messages.append(
                         {
@@ -115,22 +106,25 @@ def generate_data(messages, idx):
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt()
 
-            response = openai.Completion.create(
+            response = client.completions.create(
                 model=model_name,
                 prompt=prompt,
                 max_tokens=args.max_tokens,
                 temperature=args.temperature,
-                ignore_eos=True,
-                skip_special_tokens=False,
-                spaces_between_special_tokens=False,
+                extra_body={
+                    "ignore_eos": True,
+                    "skip_special_tokens": False,
+                    "spaces_between_special_tokens": False,
+                },
             )
-            response = response.choices[0]['text'].strip()
+            response = response.choices[0].text.strip()
             with open(args.output_path, "a") as f:
                 # write in share gpt format
                 f.write(json.dumps({"text": prompt+response}) + "\n")
     except Exception as e:
         print(e)
-        print(prompt)
+        if prompt is not None:
+            print(prompt)
         print("Failed to generate data")
 
 # if output_path exists, count the number of lines and skip the first n data

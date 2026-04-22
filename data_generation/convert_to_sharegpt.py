@@ -1,24 +1,8 @@
 import json
-import os
-import time
-import concurrent.futures
-
-import openai
-import shortuuid
 import tqdm
 
 import argparse
-import random
-
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_random_exponential,
-)
-
-from fastchat.conversation import Conversation, SeparatorStyle
 from fastchat.model.model_adapter import get_conversation_template
-from transformers import AutoTokenizer
 
 # Use the same arguments as in generate.py
 parser = argparse.ArgumentParser()
@@ -27,7 +11,6 @@ parser.add_argument("--model_name", type=str, default="HuggingFaceH4/zephyr-7b-b
 args = parser.parse_args()
 
 conv = get_conversation_template(args.model_name)
-tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 
 data = []
 with open(args.input_path) as f:

@@ -6,21 +6,17 @@ python3 gen_model_answer.py --model-path lmsys/fastchat-t5-3b-v1.0 --model-id fa
 import argparse
 import json
 import os
-import random
 import time
 import shortuuid
 import torch
 from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from fastchat.llm_judge.common import load_questions, temperature_config
-from fastchat.model import load_model, get_conversation_template
-
-# Medusa imports
-import transformers
+from fastchat.model import get_conversation_template
 
 
 from medusa.model.utils import *
-from medusa.model.medusa_model import MedusaModel
 from medusa.model.kv_cache import initialize_past_key_values
 from medusa.model.medusa_choices import *
 
@@ -184,10 +180,10 @@ def get_model_answers(
     
     # Medusa model setup
     num_heads = 4
-    model = transformers.AutoModelForCausalLM.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         model_path, low_cpu_mem_usage=True, torch_dtype=torch.float16, device_map="auto"
     )
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
+    tokenizer = AutoTokenizer.from_pretrained(
                 model_path,
                 use_fast=True,
                 trust_remote_code=True,

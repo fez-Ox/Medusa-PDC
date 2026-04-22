@@ -6,17 +6,13 @@ python3 gen_model_answer.py --model-path lmsys/fastchat-t5-3b-v1.0 --model-id fa
 import argparse
 import json
 import os
-import random
 import time
 import shortuuid
 import torch
 from tqdm import tqdm
 
 from fastchat.llm_judge.common import load_questions, temperature_config
-from fastchat.model import load_model, get_conversation_template
-
-# Medusa imports
-import transformers
+from fastchat.model import get_conversation_template
 
 
 from medusa.model.utils import *

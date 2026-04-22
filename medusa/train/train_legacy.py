@@ -20,21 +20,23 @@ from dataclasses import dataclass, field
 import json
 import math
 import pathlib
-from typing import Dict, Optional, Sequence
+from typing import Dict, Optional
 
-import numpy as np
 import torch
-from torch import nn
 from torch.utils.data import Dataset
-import transformers
-from transformers import Trainer, BitsAndBytesConfig
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    HfArgumentParser,
+    PreTrainedTokenizer,
+    Trainer,
+    TrainingArguments as HFTrainingArguments,
+)
 from transformers.trainer_pt_utils import LabelSmoother
 from safetensors.torch import save_file
 
-from fastchat.conversation import SeparatorStyle
-from fastchat.model.model_adapter import get_conversation_template
 from torch.nn import CrossEntropyLoss
-from torch.nn import functional as F
 import os
 from medusa.model.medusa_model_legacy import MedusaModel, MedusaConfig
 
@@ -118,7 +120,7 @@ class DataArguments:
 
 
 @dataclass
-class TrainingArguments(transformers.TrainingArguments):
+class TrainingArguments(HFTrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     report_to: Optional[str] = None
     optim: str = field(default="adamw_torch")
@@ -146,12 +148,12 @@ def rank0_print(*args):
         print(*args)
 
 
-def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
+def safe_save_model_for_hf_trainer(trainer: Trainer, output_dir: str):
     """
     Save the model's state dictionary to a specified directory.
 
     Args:
-        trainer (transformers.Trainer): The Hugging Face Trainer object.
+        trainer (Trainer): The Hugging Face Trainer object.
         output_dir (str): The directory where the model state dictionary will be saved.
     """
     state_dict = trainer.model.state_dict()
@@ -162,14 +164,14 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
 
 def preprocess(
     sources,
-    tokenizer: transformers.PreTrainedTokenizer,
+    tokenizer: PreTrainedTokenizer,
 ) -> Dict:
     """
     Preprocesses conversation data and tokenizes it for model input.
 
     Args:
         sources: A list of conversation sources.
-        tokenizer (transformers.PreTrainedTokenizer): The tokenizer to use for tokenization.
+        tokenizer (PreTrainedTokenizer): The tokenizer to use for tokenization.
 
     Returns:
         Dict: A dictionary containing tokenized inputs, labels, and attention mask.
@@ -224,10 +226,10 @@ class SupervisedDataset(Dataset):
 
     Args:
         raw_data (list): A list of raw data examples.
-        tokenizer (transformers.PreTrainedTokenizer): The tokenizer to use for data preprocessing.
+        tokenizer (PreTrainedTokenizer): The tokenizer to use for data preprocessing.
     """
 
-    def __init__(self, raw_data, tokenizer: transformers.PreTrainedTokenizer):
+    def __init__(self, raw_data, tokenizer: PreTrainedTokenizer):
         super(SupervisedDataset, self).__init__()
 
         rank0_print("Formatting inputs...")
@@ -256,10 +258,10 @@ class LazySupervisedDataset(Dataset):
 
     Args:
         raw_data (list): A list of raw data examples.
-        tokenizer (transformers.PreTrainedTokenizer): The tokenizer to use for data preprocessing.
+        tokenizer (PreTrainedTokenizer): The tokenizer to use for data preprocessing.
     """
 
-    def __init__(self, raw_data, tokenizer: transformers.PreTrainedTokenizer):
+    def __init__(self, raw_data, tokenizer: PreTrainedTokenizer):
         super(LazySupervisedDataset, self).__init__()
         self.tokenizer = tokenizer
 
@@ -287,12 +289,12 @@ class LazySupervisedDataset(Dataset):
 
 
 def make_supervised_data_module(
-    tokenizer: transformers.PreTrainedTokenizer, data_args
+    tokenizer: PreTrainedTokenizer, data_args
 ) -> Dict:
     """Make dataset and collator for supervised fine-tuning.
 
     Args:
-        tokenizer (transformers.PreTrainedTokenizer): The tokenizer to use for data preprocessing.
+        tokenizer (PreTrainedTokenizer): The tokenizer to use for data preprocessing.
         data_args: Data arguments.
 
     Returns:
@@ -318,14 +320,14 @@ def make_supervised_data_module(
 def train():
     global local_rank
 
-    parser = transformers.HfArgumentParser(
+    parser = HfArgumentParser(
         (ModelArguments, DataArguments, TrainingArguments)
     )
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     local_rank = training_args.local_rank
 
     # Set RoPE scaling factor
-    config = transformers.AutoConfig.from_pretrained(
+    config = AutoConfig.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
     )
@@ -335,7 +337,7 @@ def train():
         config.rope_scaling = {"type": "linear", "factor": scaling_factor}
     config.use_cache = False
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
+    tokenizer = AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
         model_max_length=training_args.model_max_length,
@@ -350,7 +352,7 @@ def train():
     print(tokenizer.apply_chat_template([{"role": "user", "content": "This is a test"}]))
 
     # Load model and tokenizer
-    model = transformers.AutoModelForCausalLM.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path,
         config=config,
         cache_dir=training_args.cache_dir,

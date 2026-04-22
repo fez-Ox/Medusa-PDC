@@ -168,7 +168,8 @@ We follow the training setup from [FastChat](https://github.com/lm-sys/FastChat#
 ```bash
 torchrun --nproc_per_node=4 medusa/train/train_legacy.py --model_name_or_path mistralai/Mistral-7B-Instruct-v0.2 \
     --data_path mistral.json \
-    --bf16 True \
+    --bf16 False \
+    --fp16 True \
     --output_dir test \
     --num_train_epochs 2 \
     --per_device_train_batch_size 8 \
@@ -181,7 +182,7 @@ torchrun --nproc_per_node=4 medusa/train/train_legacy.py --model_name_or_path mi
     --warmup_ratio 0.1 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --tf32 True \
+    --tf32 False \
     --model_max_length 2048 \
     --lazy_preprocess True \
     --medusa_num_heads 3 \

@@ -43,6 +43,33 @@ from medusa.model.medusa_model_legacy import MedusaModel, MedusaConfig
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
 
+def _is_rank0():
+    return os.environ.get("RANK", "0") == "0"
+
+
+def _cuda_is_ampere_or_newer() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    major, _ = torch.cuda.get_device_capability(0)
+    return major >= 8
+
+
+def _cuda_supports_bf16() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    if hasattr(torch.cuda, "is_bf16_supported"):
+        return torch.cuda.is_bf16_supported()
+    return False
+
+
+def _select_model_dtype(training_args):
+    if training_args.bf16:
+        return torch.bfloat16
+    if training_args.fp16:
+        return torch.float16
+    return torch.float32
+
+
 # Customized for training Medusa heads
 class CustomizedTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False):
@@ -138,6 +165,43 @@ class TrainingArguments(HFTrainingArguments):
         default=1,
         metadata={"help": "Number of layers for each Medusa head."},
     )
+
+    def __post_init__(self):
+        if getattr(self, "tf32", False) and not _cuda_is_ampere_or_newer():
+            if _is_rank0():
+                print("Warning: --tf32=True is not supported on this system; falling back to --tf32=False.")
+            self.tf32 = False
+
+        if getattr(self, "bf16", False) and not _cuda_supports_bf16():
+            if _is_rank0():
+                print("Warning: --bf16=True is not supported on this system; falling back to --bf16=False.")
+            self.bf16 = False
+            if torch.cuda.is_available() and not getattr(self, "fp16", False):
+                if _is_rank0():
+                    print("Warning: Enabling --fp16=True for T4-compatible mixed precision.")
+                self.fp16 = True
+
+        try:
+            super().__post_init__()
+        except ValueError as exc:
+            error_text = str(exc)
+            if getattr(self, "tf32", False) and "--tf32 requires Ampere or a newer GPU arch" in error_text:
+                if _is_rank0():
+                    print("Warning: --tf32=True is not supported on this system; falling back to --tf32=False.")
+                self.tf32 = False
+                super().__post_init__()
+                return
+            if getattr(self, "bf16", False) and "bf16" in error_text.lower():
+                if _is_rank0():
+                    print("Warning: --bf16=True is not supported on this system; falling back to --bf16=False.")
+                self.bf16 = False
+                if torch.cuda.is_available() and not getattr(self, "fp16", False):
+                    if _is_rank0():
+                        print("Warning: Enabling --fp16=True for T4-compatible mixed precision.")
+                    self.fp16 = True
+                super().__post_init__()
+                return
+            raise
 
 
 local_rank = None
@@ -326,6 +390,9 @@ def train():
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     local_rank = training_args.local_rank
 
+    if model_args.load_in_8bit and model_args.load_in_4bit:
+        raise ValueError("Only one of --load_in_8bit and --load_in_4bit can be enabled.")
+
     # Set RoPE scaling factor
     config = AutoConfig.from_pretrained(
         model_args.model_name_or_path,
@@ -352,11 +419,26 @@ def train():
     print(tokenizer.apply_chat_template([{"role": "user", "content": "This is a test"}]))
 
     # Load model and tokenizer
+    model_dtype = _select_model_dtype(training_args)
+    if _is_rank0():
+        print(f"Loading base model with dtype={model_dtype}.")
+
+    quantization_kwargs = {}
+    if model_args.load_in_8bit:
+        quantization_kwargs["load_in_8bit"] = True
+    if model_args.load_in_4bit:
+        quantization_kwargs["load_in_4bit"] = True
+    if quantization_kwargs:
+        quantization_kwargs["device_map"] = "auto"
+        if _is_rank0():
+            print(f"Enabling quantized loading with arguments: {quantization_kwargs}.")
+
     model = AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path,
         config=config,
         cache_dir=training_args.cache_dir,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=model_dtype,
+        **quantization_kwargs,
     )
 
     # Freeze the base model

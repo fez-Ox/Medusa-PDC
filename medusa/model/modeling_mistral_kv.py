@@ -20,11 +20,15 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
-    is_flash_attn_available,
     logging,
     replace_return_docstrings,
 )
 from transformers.models.mistral.configuration_mistral import MistralConfig
+
+try:
+    from transformers.utils import is_flash_attn_available
+except ImportError:
+    from transformers.utils import is_flash_attn_2_available as is_flash_attn_available
 
 
 if is_flash_attn_available():

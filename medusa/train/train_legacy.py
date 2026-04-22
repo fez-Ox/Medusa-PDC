@@ -16,13 +16,16 @@
 
 # Adapted from: https://github.com/lm-sys/FastChat/blob/main/fastchat/train/train.py
 
-from dataclasses import dataclass, field
 import json
 import math
+import os
 import pathlib
+from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 import torch
+from safetensors.torch import save_file
+from torch.nn import CrossEntropyLoss
 from torch.utils.data import Dataset
 from transformers import (
     AutoConfig,
@@ -31,14 +34,13 @@ from transformers import (
     HfArgumentParser,
     PreTrainedTokenizer,
     Trainer,
+)
+from transformers import (
     TrainingArguments as HFTrainingArguments,
 )
 from transformers.trainer_pt_utils import LabelSmoother
-from safetensors.torch import save_file
 
-from torch.nn import CrossEntropyLoss
-import os
-from medusa.model.medusa_model_legacy import MedusaModel, MedusaConfig
+from medusa.model.medusa_model_legacy import MedusaConfig, MedusaModel
 
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
@@ -169,35 +171,50 @@ class TrainingArguments(HFTrainingArguments):
     def __post_init__(self):
         if getattr(self, "tf32", False) and not _cuda_is_ampere_or_newer():
             if _is_rank0():
-                print("Warning: --tf32=True is not supported on this system; falling back to --tf32=False.")
+                print(
+                    "Warning: --tf32=True is not supported on this system; falling back to --tf32=False."
+                )
             self.tf32 = False
 
         if getattr(self, "bf16", False) and not _cuda_supports_bf16():
             if _is_rank0():
-                print("Warning: --bf16=True is not supported on this system; falling back to --bf16=False.")
+                print(
+                    "Warning: --bf16=True is not supported on this system; falling back to --bf16=False."
+                )
             self.bf16 = False
             if torch.cuda.is_available() and not getattr(self, "fp16", False):
                 if _is_rank0():
-                    print("Warning: Enabling --fp16=True for T4-compatible mixed precision.")
+                    print(
+                        "Warning: Enabling --fp16=True for T4-compatible mixed precision."
+                    )
                 self.fp16 = True
 
         try:
             super().__post_init__()
         except ValueError as exc:
             error_text = str(exc)
-            if getattr(self, "tf32", False) and "--tf32 requires Ampere or a newer GPU arch" in error_text:
+            if (
+                getattr(self, "tf32", False)
+                and "--tf32 requires Ampere or a newer GPU arch" in error_text
+            ):
                 if _is_rank0():
-                    print("Warning: --tf32=True is not supported on this system; falling back to --tf32=False.")
+                    print(
+                        "Warning: --tf32=True is not supported on this system; falling back to --tf32=False."
+                    )
                 self.tf32 = False
                 super().__post_init__()
                 return
             if getattr(self, "bf16", False) and "bf16" in error_text.lower():
                 if _is_rank0():
-                    print("Warning: --bf16=True is not supported on this system; falling back to --bf16=False.")
+                    print(
+                        "Warning: --bf16=True is not supported on this system; falling back to --bf16=False."
+                    )
                 self.bf16 = False
                 if torch.cuda.is_available() and not getattr(self, "fp16", False):
                     if _is_rank0():
-                        print("Warning: Enabling --fp16=True for T4-compatible mixed precision.")
+                        print(
+                            "Warning: Enabling --fp16=True for T4-compatible mixed precision."
+                        )
                     self.fp16 = True
                 super().__post_init__()
                 return
@@ -225,6 +242,7 @@ def safe_save_model_for_hf_trainer(trainer: Trainer, output_dir: str):
         cpu_state_dict = {key: value.cpu() for key, value in state_dict.items()}
         del state_dict
         trainer._save(output_dir, state_dict=cpu_state_dict)  # noqa
+
 
 def preprocess(
     sources,
@@ -263,20 +281,22 @@ def preprocess(
     input_ids = encoding.input_ids
 
     # Mask targets. Only compute loss on the assistant outputs.
-    for conv_index, (conversation, target, prompt) in enumerate(zip(conversations, targets, prompts)):
-
+    for conv_index, (conversation, target, prompt) in enumerate(
+        zip(conversations, targets, prompts)
+    ):
         for turn in conversation:
             if turn["role"] == "assistant":
                 content = turn["content"]
                 # Unfortunate strip() necessary because chat templates are doing the same.
                 start = prompt.index(content.strip())
                 stop = start + len(content)
-                indices= []
-                for tok_index, (tok_start, tok_stop) in enumerate(encoding.offset_mapping[conv_index]):
+                indices = []
+                for tok_index, (tok_start, tok_stop) in enumerate(
+                    encoding.offset_mapping[conv_index]
+                ):
                     if tok_stop >= start or tok_start < tok_stop:
                         indices.append(tok_index)
                 target[indices] = encoding.input_ids[conv_index][indices]
-
 
     return dict(
         input_ids=input_ids,
@@ -352,9 +372,7 @@ class LazySupervisedDataset(Dataset):
         return ret
 
 
-def make_supervised_data_module(
-    tokenizer: PreTrainedTokenizer, data_args
-) -> Dict:
+def make_supervised_data_module(tokenizer: PreTrainedTokenizer, data_args) -> Dict:
     """Make dataset and collator for supervised fine-tuning.
 
     Args:
@@ -384,14 +402,14 @@ def make_supervised_data_module(
 def train():
     global local_rank
 
-    parser = HfArgumentParser(
-        (ModelArguments, DataArguments, TrainingArguments)
-    )
+    parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     local_rank = training_args.local_rank
 
     if model_args.load_in_8bit and model_args.load_in_4bit:
-        raise ValueError("Only one of --load_in_8bit and --load_in_4bit can be enabled.")
+        raise ValueError(
+            "Only one of --load_in_8bit and --load_in_4bit can be enabled."
+        )
 
     # Set RoPE scaling factor
     config = AutoConfig.from_pretrained(
@@ -411,12 +429,26 @@ def train():
         padding_side="right",
         use_fast=True,
     )
+
+    # Add this block right after tokenizer loading
+    if tokenizer.chat_template is None:
+        # Vicuna-style chat template
+        tokenizer.chat_template = (
+            "{% for message in messages %}"
+            "{% if message['role'] == 'user' %}"
+            "USER: {{ message['content'] }} "
+            "{% elif message['role'] == 'assistant' %}"
+            "ASSISTANT: {{ message['content'] }}</s>"
+            "{% endif %}"
+            "{% endfor %}"
+        )
+
     tokenizer.pad_token = tokenizer.unk_token
     tokenizer.pad_token = tokenizer.eos_token
 
     # Making sure the tokenizer works before loading the model.
-    print(tokenizer(["This is a test", "secondary"], padding=True))
-    print(tokenizer.apply_chat_template([{"role": "user", "content": "This is a test"}]))
+    #    print(tokenizer(["This is a test", "secondary"], padding=True))
+    #    print(tokenizer.apply_chat_template([{"role": "user", "content": "This is a test"}]))
 
     # Load model and tokenizer
     model_dtype = _select_model_dtype(training_args)
@@ -456,7 +488,6 @@ def train():
     # Format output dir
     training_args.output_dir = f"{training_args.output_dir}_medusa_mlp_{model_args.model_name_or_path.split('/')[-1]}_medusa_{training_args.medusa_num_heads}_lr_{training_args.learning_rate}_layers_{training_args.medusa_num_layers}"
 
-
     # Load data
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
 
@@ -465,7 +496,7 @@ def train():
         medusa_num_heads=training_args.medusa_num_heads,
         medusa_num_layers=training_args.medusa_num_layers,
         base_model_name_or_path=model_args.model_name_or_path,
-        version="2"
+        version="2",
     )
 
     # Save Medusa config
@@ -489,6 +520,7 @@ def train():
     else:
         lm_head = medusa_lm_head.medusa_head
     import deepspeed
+
     with deepspeed.zero.GatheredParameters(lm_head.parameters()):
         state_dict = lm_head.state_dict()
 
